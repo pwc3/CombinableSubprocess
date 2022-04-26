@@ -1,11 +1,10 @@
 import Combine
 import Foundation
 
-public enum SubprocessError: Error {
+public enum SubprocessError: Error, Equatable {
     case bufferOverrun
     case uncaughtSignal
     case terminationStatus(Int32)
-    case generalError(Error)
 }
 
 public class Subprocess {
@@ -166,5 +165,18 @@ public class Subprocess {
             )
             .eraseToAnyPublisher()
     }
+
+    public func pipeStdout(toStdin other: Subprocess) {
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        other.process.standardInput = pipe
+    }
 }
 
+extension Subprocess: CustomDebugStringConvertible {
+    public var debugDescription: String {
+        let executable = process.executableURL?.lastPathComponent ?? "(nil)"
+        let arguments = (process.arguments ?? []).joined(separator: " ")
+        return "Subprocess(\(executable) \(arguments))"
+    }
+}
