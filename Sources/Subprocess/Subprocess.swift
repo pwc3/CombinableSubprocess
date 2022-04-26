@@ -9,7 +9,7 @@ public enum SubprocessError: Error {
 }
 
 public class Subprocess {
-    let reference: Process
+    private let process: Process
 
     private let group = DispatchGroup()
 
@@ -27,9 +27,9 @@ public class Subprocess {
         terminationHandler: ((Subprocess) -> Void)?,
         qualityOfService: DispatchQoS = .default
     ) {
-        reference = Process()
-        reference.executableURL = executableURL
-        reference.arguments = arguments
+        process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
         notifyQueue = DispatchQueue(
             label: "SubprocessQueue",
             qos: qualityOfService,
@@ -39,8 +39,8 @@ public class Subprocess {
         )
         self.terminationHandler = terminationHandler
 
-        currentDirectoryURL.map { reference.currentDirectoryURL = $0 }
-        environment.map { reference.environment = $0 }
+        currentDirectoryURL.map { process.currentDirectoryURL = $0 }
+        environment.map { process.environment = $0 }
     }
 
     public convenience init(
@@ -64,54 +64,54 @@ public class Subprocess {
     // MARK: - Configuration
 
     public var processIdentifier: Int32 {
-        reference.processIdentifier
+        process.processIdentifier
     }
 
     public var isRunning: Bool {
-        reference.isRunning
+        process.isRunning
     }
 
     public var terminationStatus: Int32 {
-        reference.terminationStatus
+        process.terminationStatus
     }
 
     public var terminationReason: Process.TerminationReason {
-        reference.terminationReason
+        process.terminationReason
     }
 
     // MARK: - Control
 
     public func interrupt() {
-        reference.interrupt()
+        process.interrupt()
     }
 
     public func resume() -> Bool {
-        reference.resume()
+        process.resume()
     }
 
     public func suspend() -> Bool {
-        reference.suspend()
+        process.suspend()
     }
 
     public func terminate() {
-        reference.terminate()
+        process.terminate()
     }
 
     public func run() throws {
         group.enter()
 
-        reference.terminationHandler = { [group] proc in
+        process.terminationHandler = { [group] proc in
             group.leave()
             proc.terminationHandler = nil
         }
 
-        group.notify(queue: .global()) { [weak self] in
+        group.notify(queue: notifyQueue) { [weak self] in
             self.map {
                 $0.terminationHandler?($0)
             }
         }
 
-        try reference.run()
+        try process.run()
     }
 
     // MARK: - Output Streams
@@ -119,14 +119,14 @@ public class Subprocess {
     public lazy var stdout: AnyPublisher<String, SubprocessError> = {
         let stdout = Pipe()
         let publisher = outputPublisher(for: stdout)
-        reference.standardOutput = stdout
+        process.standardOutput = stdout
         return publisher.eraseToAnyPublisher()
     }()
 
     public lazy var stderr: AnyPublisher<String, SubprocessError> = {
         let stderr = Pipe()
         let publisher = outputPublisher(for: stderr)
-        reference.standardError = stderr
+        process.standardError = stderr
         return publisher.eraseToAnyPublisher()
     }()
 
@@ -142,12 +142,14 @@ public class Subprocess {
             group.leave()
         }
 
-        group.notify(queue: .global()) { [reference] in
-            if reference.terminationReason == .uncaughtSignal {
+        group.notify(queue: notifyQueue) { [process] in
+            precondition(!process.isRunning)
+
+            if process.terminationReason == .uncaughtSignal {
                 subject.send(completion: .failure(.uncaughtSignal))
             }
-            else if reference.terminationStatus != 0 {
-                subject.send(completion: .failure(.terminationStatus(reference.terminationStatus)))
+            else if process.terminationStatus != 0 {
+                subject.send(completion: .failure(.terminationStatus(process.terminationStatus)))
             }
             else {
                 subject.send(completion: .finished)
