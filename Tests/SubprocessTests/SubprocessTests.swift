@@ -16,37 +16,42 @@ final class SubprocessTests: XCTestCase {
     }
 
     func testNoStreamCapture() throws {
-        let exp = expectation(description: "termination handler called")
+        let exp = expectation(description: "termination future resolved")
 
         let subprocess = Subprocess(
             executablePath: "/bin/cat",
-            arguments: ["/usr/share/dict/words"],
-            terminationHandler: { proc in
-                XCTAssertEqual(proc.terminationStatus, 0)
-                XCTAssertEqual(proc.terminationReason, .exit)
-                XCTAssertFalse(proc.isRunning)
+            arguments: ["/usr/share/dict/words"]
+        )
 
-                exp.fulfill()
-            })
+        subprocess.termination.sink { termination in
+            XCTAssertEqual(termination.status, 0)
+            XCTAssertEqual(termination.reason, .exit)
+            XCTAssertFalse(subprocess.isRunning)
+
+            exp.fulfill()
+        }.store(in: &cancellables)
 
         try subprocess.run()
         wait(for: [exp], timeout: 10)
     }
 
     func testStdoutCapture() throws {
-        let exp1 = expectation(description: "termination handler called")
+        let exp1 = expectation(description: "termination future resolved")
         let exp2 = expectation(description: "publisher completion received")
 
         let subprocess = Subprocess(
             executablePath: "/bin/cat",
-            arguments: ["/usr/share/dict/words"],
-            terminationHandler: { proc in
-                XCTAssertEqual(proc.terminationStatus, 0)
-                XCTAssertEqual(proc.terminationReason, .exit)
-                XCTAssertFalse(proc.isRunning)
+            arguments: ["/usr/share/dict/words"]
+        )
 
-                exp1.fulfill()
-            })
+        subprocess.termination.sink { termination in
+            XCTAssertEqual(termination.status, 0)
+            XCTAssertEqual(termination.reason, .exit)
+            XCTAssertFalse(subprocess.isRunning)
+
+            exp1.fulfill()
+        }
+        .store(in: &cancellables)
 
         subprocess
             .stdout
@@ -67,18 +72,30 @@ final class SubprocessTests: XCTestCase {
         let exp1 = expectation(description: "/bin/cat completed")
         let cat = Subprocess(
             executablePath: "/bin/cat",
-            arguments: ["/usr/share/dict/words"],
-            terminationHandler: { proc in
-                exp1.fulfill()
-            })
+            arguments: ["/usr/share/dict/words"]
+        )
+
+        cat.termination.sink { termination in
+            XCTAssertEqual(termination.status, 0)
+            XCTAssertEqual(termination.reason, .exit)
+            XCTAssertFalse(cat.isRunning)
+            exp1.fulfill()
+        }
+        .store(in: &cancellables)
 
         let exp2 = expectation(description: "/usr/bin/wc completed")
         let wc = Subprocess(
             executablePath: "/usr/bin/wc",
-            arguments: ["-l"],
-            terminationHandler: { proc in
-                exp2.fulfill()
-            })
+            arguments: ["-l"]
+        )
+
+        wc.termination.sink { termination in
+            XCTAssertEqual(termination.status, 0)
+            XCTAssertEqual(termination.reason, .exit)
+            XCTAssertFalse(wc.isRunning)
+            exp2.fulfill()
+        }
+        .store(in: &cancellables)
 
         cat.pipeStdout(toStdin: wc)
 

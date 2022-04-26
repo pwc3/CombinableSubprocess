@@ -8,13 +8,21 @@ public enum SubprocessError: Error, Equatable {
 }
 
 public class Subprocess {
+
+    public struct Termination {
+        public var status: Int32
+        public var reason: Process.TerminationReason
+    }
+
     private let process: Process
 
     private let group = DispatchGroup()
 
-    private let terminationHandler: ((Subprocess) -> Void)?
-
     private let notifyQueue: DispatchQueue
+
+    private let terminationPromise: Future<Termination, Never>.Promise
+
+    public let termination: Future<Termination, Never>
 
     // MARK: - Initializer
 
@@ -23,7 +31,6 @@ public class Subprocess {
         arguments: [String],
         currentDirectoryURL: URL? = nil,
         environment: [String : String]? = nil,
-        terminationHandler: ((Subprocess) -> Void)?,
         qualityOfService: DispatchQoS = .default
     ) {
         process = Process()
@@ -36,7 +43,8 @@ public class Subprocess {
             autoreleaseFrequency: .workItem,
             target: nil
         )
-        self.terminationHandler = terminationHandler
+
+        (termination, terminationPromise) = Future.promise()
 
         currentDirectoryURL.map { process.currentDirectoryURL = $0 }
         environment.map { process.environment = $0 }
@@ -47,7 +55,6 @@ public class Subprocess {
         arguments: [String],
         currentDirectoryPath: String? = nil,
         environment: [String : String]? = nil,
-        terminationHandler: ((Subprocess) -> Void)?,
         qualityOfService: DispatchQoS = .default
     ) {
         self.init(
@@ -55,7 +62,6 @@ public class Subprocess {
             arguments: arguments,
             currentDirectoryURL: currentDirectoryPath.map { URL(fileURLWithPath: $0) },
             environment: environment,
-            terminationHandler: terminationHandler,
             qualityOfService: qualityOfService
         )
     }
@@ -104,10 +110,15 @@ public class Subprocess {
             proc.terminationHandler = nil
         }
 
-        group.notify(queue: notifyQueue) { [weak self] in
-            self.map {
-                $0.terminationHandler?($0)
-            }
+        group.notify(queue: notifyQueue) { [process, terminationPromise] in
+            terminationPromise(
+                .success(
+                    Termination(
+                        status: process.terminationStatus,
+                        reason: process.terminationReason
+                    )
+                )
+            )
         }
 
         try process.run()
