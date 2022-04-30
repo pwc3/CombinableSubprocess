@@ -34,6 +34,45 @@ final class SubprocessTests: XCTestCase {
         wait(for: [exp], timeout: 10)
     }
 
+    func testZeroExit() throws {
+        let exp = expectation(description: "termination future resolved")
+
+        let subprocess = Subprocess(
+            executablePath: "/bin/bash",
+            arguments: ["-c", "exit 0"]
+        )
+
+        subprocess.termination.sink { completion in
+            XCTAssertEqual(completion, .finished)
+            exp.fulfill()
+        }
+        .store(in: &cancellables)
+
+        try subprocess.run()
+
+        wait(for: [exp], timeout: 10)
+    }
+
+    func testNonZeroExit() throws {
+        let exp = expectation(description: "termination future resolved")
+        let exitCode = Int32(42)
+
+        let subprocess = Subprocess(
+            executablePath: "/bin/bash",
+            arguments: ["-c", "exit \(exitCode)"]
+        )
+
+        subprocess.termination.sink { completion in
+            XCTAssertEqual(completion, .failure(SubprocessError.nonZeroTerminationStatus(exitCode)))
+            exp.fulfill()
+        }
+        .store(in: &cancellables)
+
+        try subprocess.run()
+
+        wait(for: [exp], timeout: 10)
+    }
+
     func testStdoutCapture() throws {
         let exp1 = expectation(description: "termination future resolved")
         let exp2 = expectation(description: "publisher completion received")
@@ -52,7 +91,7 @@ final class SubprocessTests: XCTestCase {
         .store(in: &cancellables)
 
         subprocess
-            .stdout
+            .standardOutput
             .count()
             .sink(receiveCompletion: { completion in
                 XCTAssertEqual(completion, .finished)
@@ -84,7 +123,7 @@ final class SubprocessTests: XCTestCase {
         .store(in: &cancellables)
 
         subprocess
-            .stdout
+            .standardOutput
             .flatMap(maxPublishers: .max(1)) {
                 // Add a 100 ms delay in processing. Without a buffer, we would fail to capture all values.
                 Just($0).delay(for: .milliseconds(10), scheduler: DispatchQueue.main)
@@ -129,10 +168,10 @@ final class SubprocessTests: XCTestCase {
         }
         .store(in: &cancellables)
 
-        cat.pipeStdout(toStdin: wc)
+        cat.pipeStandardOutput(toStandardInput: wc)
 
         let exp3 = expectation(description: "publisher completion received")
-        wc.stdout
+        wc.standardOutput
             .sink(receiveCompletion: { completion in
                 XCTAssertEqual(completion, .finished)
                 exp3.fulfill()
@@ -167,7 +206,7 @@ final class SubprocessTests: XCTestCase {
         .store(in: &cancellables)
 
         subprocess
-            .stdout
+            .standardOutput
             .count()
             .sink(receiveCompletion: { completion in
                 XCTAssertEqual(completion, .finished)
@@ -178,7 +217,7 @@ final class SubprocessTests: XCTestCase {
             .store(in: &cancellables)
 
         subprocess
-            .stdout
+            .standardOutput
             .count()
             .sink(receiveCompletion: { completion in
                 XCTAssertEqual(completion, .finished)
@@ -191,5 +230,81 @@ final class SubprocessTests: XCTestCase {
         try subprocess.run()
 
         wait(for: [exp1, exp2, exp3], timeout: 60)
+    }
+
+    func testReadmeBasicUsageExample() throws {
+        let exp = expectation(description: "termination future resolved")
+
+        let subprocess = Subprocess(
+            executablePath: "/usr/bin/seq",
+            arguments: ["3"]
+        )
+
+        try subprocess.run()
+
+        subprocess.termination.sink(receiveCompletion: { completion in
+            switch completion {
+            case .finished:
+                print("The process completed successfully")
+
+            case .failure(let error):
+                print("The process completed with an error:", error)
+            }
+            exp.fulfill()
+        }, receiveValue: {})
+        .store(in: &cancellables)
+
+        wait(for: [exp], timeout: 10)
+    }
+
+    func testReadmeOutputObservationUsageExample() throws {
+        let exp = expectation(description: "termination future resolved")
+
+        let subprocess = Subprocess(
+            executablePath: "/usr/bin/seq",
+            arguments: ["3"]
+        )
+
+        subprocess.standardOutput
+            .compactMap { Int($0) }
+            .sink(receiveCompletion: { _ in
+                exp.fulfill()
+            }, receiveValue: {
+                print("Received Int:", $0)
+            })
+            .store(in: &cancellables)
+
+        try subprocess.run()
+
+        wait(for: [exp], timeout: 10)
+    }
+
+    func testReadmePipeUsageExample() throws {
+        let cat = Subprocess(
+            executablePath: "/usr/bin/seq",
+            arguments: ["100"]
+        )
+
+        let wc = Subprocess(
+            executablePath: "/usr/bin/wc",
+            arguments: ["-l"]
+        )
+
+        cat.pipeStandardOutput(toStandardInput: wc)
+
+        let exp = expectation(description: "publisher completion received")
+        wc.standardOutput
+            .sink(receiveCompletion: { completion in
+                XCTAssertEqual(completion, .finished)
+                exp.fulfill()
+            }, receiveValue: { text in
+                XCTAssertEqual("100", text.trimmingCharacters(in: .whitespaces))
+            })
+            .store(in: &cancellables)
+
+        try cat.run()
+        try wc.run()
+
+        wait(for: [exp], timeout: 60)
     }
 }

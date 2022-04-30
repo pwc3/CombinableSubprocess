@@ -23,7 +23,7 @@ public enum SubprocessError: Error, Equatable {
 
  To observe the subprocess output, use the `stdout` and `stderr` publishers. The first time an output publisher is referenced, the corresponding output stream is redirected to the resulting publisher. This must be done before the subprocess is launched (i.e., before `run()` is called). If you do not reference an output publisher, that output stream will be inherited from the creating process.
 
- It is possible to pipe standard output from one subprocess into the standard input of another process using the `pipeStdout(toStdin:)` function.
+ It is possible to pipe standard output from one subprocess into the standard input of another process using the `pipeStandardOutput(toStandardInput:)` function.
  */
 public final class Subprocess {
 
@@ -148,7 +148,7 @@ public final class Subprocess {
     // MARK: - Output Streams
 
     /// Routes the process's standard output to a publisher.
-    public lazy var stdout: AnyPublisher<String, SubprocessError> = {
+    public lazy var standardOutput: AnyPublisher<String, SubprocessError> = {
         let stdout = Pipe()
         let publisher = outputPublisher(for: stdout)
         receiver.standardOutput = stdout
@@ -156,7 +156,7 @@ public final class Subprocess {
     }()
 
     /// Routes the process's standard error to a publisher.
-    public lazy var stderr: AnyPublisher<String, SubprocessError> = {
+    public lazy var standardError: AnyPublisher<String, SubprocessError> = {
         let stderr = Pipe()
         let publisher = outputPublisher(for: stderr)
         receiver.standardError = stderr
@@ -212,9 +212,9 @@ public final class Subprocess {
             .eraseToAnyPublisher()
     }
 
-    /// Connects stdout of this process to stdin of the specified process. Allows for the
-    /// construction of process pipelines.
-    public func pipeStdout(toStdin other: Subprocess) {
+    /// Connects standard output of this process to standard input of the specified process.
+    /// Allows for the construction of process pipelines.
+    public func pipeStandardOutput(toStandardInput other: Subprocess) {
         let pipe = Pipe()
         receiver.standardOutput = pipe
         other.receiver.standardInput = pipe
