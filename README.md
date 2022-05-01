@@ -1,6 +1,6 @@
 # CombinableSubprocess
 
-This package provides a `Subprocess` class that enables observation of a subprocess using Combine.
+This package provides a `Subprocess` class that enables observation of child processes using Combine.
 
 ## Basic usage
 
