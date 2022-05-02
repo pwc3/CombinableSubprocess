@@ -37,6 +37,8 @@ public enum SubprocessError: Error, Equatable {
 
     /// The output publisher failed due to a buffer overrun.
     case bufferOverrun
+
+    case unableToLaunchProcess
 }
 
 /**
@@ -148,13 +150,20 @@ public final class Subprocess {
         )
     }
 
+    deinit {
+        print("*** deinit subprocess", debugDescription)
+    }
+
     /// Runs the subprocess.
     public func run() throws {
         // Enter the dispatch group.
         group.enter()
 
+        let debugDescription = self.debugDescription
+
         // When the process terminates, leave the dispatch group.
         receiver.terminationHandler = { [group] proc in
+            print("*** termination handler", debugDescription)
             group.leave()
             proc.terminationHandler = nil
         }
@@ -163,11 +172,21 @@ public final class Subprocess {
         // Here, we fulfill the termination promise with a value encapsulating the termination
         // status and reason.
         group.notify(queue: notifyQueue) { [receiver, terminationPromise] in
+            print("*** invoking termination promise", debugDescription)
             terminationPromise(Self.resultForCompletedProcess(receiver))
+            print("*** finished subprocess", debugDescription)
         }
 
         // Actually start the process.
-        try receiver.run()
+        do {
+            print("*** starting", debugDescription)
+            try receiver.run()
+            print("*** started", debugDescription)
+        }
+        catch {
+            print("*** error starting", debugDescription, error)
+            group.leave()
+        }
     }
 
     // MARK: - Output Streams
@@ -196,18 +215,28 @@ public final class Subprocess {
         // Enter the dispatch group. This allows to continue processing buffered output
         // after the process has finished.
         group.enter()
+        print("*** entered DispatchGroup in outputPublisher(for:)", debugDescription)
 
         Task {
-            // Loop over the lines emitted by the pipe's read handle's async sequence.
-            // This will terminate when all of the pipe's data has been read and the
-            // pipe is closed.
-            for try await line in pipe.fileHandleForReading.bytes.lines {
-                subject.send(line)
+            do {
+                // Loop over the lines emitted by the pipe's read handle's async sequence.
+                // This will terminate when all of the pipe's data has been read and the
+                // pipe is closed.
+                for try await line in pipe.fileHandleForReading.bytes.lines {
+                    subject.send(line)
+                }
+
+                // NOTE: If receiver.run() threw an error, this loop won't exit.
+                // Consequently, group.leave() won't get called and the publisher hangs.
+            }
+            catch {
+                print("*** caught error reading from pipe", error, debugDescription)
             }
 
             // When we reach this point, the process is complete and we can leave the
             // dispatch group.
             group.leave()
+            print("*** left DispatchGroup in outputPublisher(for:)", debugDescription)
         }
 
         // When all of the work items in the dispatch group finish, the notify function is called.
@@ -249,6 +278,12 @@ public final class Subprocess {
     /// process has finished running.
     private static func resultForCompletedProcess(_ process: Process) -> Result<Void, SubprocessError> {
         precondition(!process.isRunning)
+
+        // How to detect if the process hasn't been launched yet?
+        // Specifically if receiver.run() threw an error?
+        guard process.processIdentifier != 0 else {
+            return .failure(.unableToLaunchProcess)
+        }
 
         if process.terminationReason == .uncaughtSignal {
             return .failure(.uncaughtSignal)
@@ -327,7 +362,7 @@ public extension Subprocess {
 
 extension Subprocess: CustomDebugStringConvertible {
     public var debugDescription: String {
-        let executable = receiver.executableURL?.lastPathComponent ?? "(nil)"
+        let executable = receiver.executableURL?.description ?? "(nil)"
         let arguments = (receiver.arguments ?? []).joined(separator: " ")
 
         return "Subprocess(\(executable) \(arguments))"
