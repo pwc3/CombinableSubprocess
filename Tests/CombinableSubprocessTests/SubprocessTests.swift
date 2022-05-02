@@ -130,7 +130,6 @@ final class SubprocessTests: XCTestCase {
 
         subprocess
             .standardOutput
-            .filter { !$0.isEmpty }
             .count()
             .sink(receiveCompletion: { completion in
                 assertFinished(completion)
@@ -163,7 +162,6 @@ final class SubprocessTests: XCTestCase {
 
         subprocess
             .standardOutput
-            .filter { !$0.isEmpty }
             .flatMap(maxPublishers: .max(1)) {
                 // Add a 100 ms delay in processing. Without a buffer, we would fail to capture all values.
                 Just($0).delay(for: .milliseconds(10), scheduler: DispatchQueue.main)
@@ -212,7 +210,6 @@ final class SubprocessTests: XCTestCase {
 
         let exp3 = expectation(description: "publisher completion received")
         wc.standardOutput
-            .filter { !$0.isEmpty }
             .sink(receiveCompletion: { completion in
                 assertFinished(completion)
                 exp3.fulfill()
@@ -248,7 +245,6 @@ final class SubprocessTests: XCTestCase {
 
         subprocess
             .standardOutput
-            .filter { !$0.isEmpty }
             .count()
             .sink(receiveCompletion: { completion in
                 assertFinished(completion)
@@ -260,7 +256,6 @@ final class SubprocessTests: XCTestCase {
 
         subprocess
             .standardOutput
-            .filter { !$0.isEmpty }
             .count()
             .sink(receiveCompletion: { completion in
                 assertFinished(completion)
@@ -337,7 +332,6 @@ final class SubprocessTests: XCTestCase {
 
         let exp = expectation(description: "publisher completion received")
         wc.standardOutput
-            .first()
             .sink(receiveCompletion: { completion in
                 assertFinished(completion)
                 exp.fulfill()
@@ -350,5 +344,28 @@ final class SubprocessTests: XCTestCase {
         wc.run()
 
         wait(for: [exp], timeout: 60)
+    }
+
+    func testWhichBash() throws {
+        let exp = expectation(description: "publisher completion received")
+
+        let which = Subprocess(executablePath: "/usr/bin/which", arguments: ["bash"])
+        which.standardOutput
+            .sink(receiveCompletion: { completion in
+                switch completion {
+                case .finished:
+                    print("Successfully completed")
+
+                case .failure(let error):
+                    XCTFail("Unexpected error \(error)")
+                }
+                exp.fulfill()
+            }, receiveValue: { text in
+                print("received", text)
+            })
+            .store(in: &cancellables)
+
+        which.run()
+        wait(for: [exp], timeout: 10)
     }
 }

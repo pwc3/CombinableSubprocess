@@ -42,7 +42,7 @@ let subprocess = Subprocess(
     arguments: ["3"]
 )
 
-try subprocess.run()
+subprocess.run()
 
 subprocess.termination.sink(receiveCompletion: { completion in
     switch completion {
@@ -75,13 +75,13 @@ let subprocess = Subprocess(
 subprocess.standardOutput
     .compactMap { Int($0) }
     .sink(receiveCompletion: { _ in
-        exp.fulfill()
+        print("Done")
     }, receiveValue: {
         print("Received Int:", $0)
     })
     .store(in: &cancellables)
 
-try subprocess.run()
+subprocess.run()
 ```
 
 This will output:
@@ -90,6 +90,7 @@ This will output:
 Received Int: 1
 Received Int: 2
 Received Int: 3
+Done
 ```
 
 ## Subprocess pipelines
@@ -110,7 +111,6 @@ let wc = Subprocess(
 cat.pipeStandardOutput(toStandardInput: wc)
 
 wc.standardOutput
-    .first() // take only the first line of output
     .sink(receiveCompletion: { completion in
         // ...
     }, receiveValue: { text in
@@ -118,8 +118,8 @@ wc.standardOutput
     })
     .store(in: &cancellables)
 
-try cat.run()
-try wc.run()
+cat.run()
+wc.run()
 ``` 
 
 This will output:
@@ -127,3 +127,31 @@ This will output:
 ```
 Received value: 100
 ```
+
+## Command
+
+The `Command` type simplifies running a subprocess and capturing its output. The call to `run()` returns the standard output publisher.
+
+The example above showing how to examine output would instead become:
+
+```swift
+let command = Command("/usr/bin/seq", "3")
+
+command.run()
+    .compactMap { Int($0) }
+    .sink(receiveCompletion: { _ in
+        print("Done")
+    }, receiveValue: {
+        print("Received Int:", $0)
+    })
+    .store(in: &cancellables)
+```
+
+This will output:
+
+```
+Received Int: 1
+Received Int: 2
+Received Int: 3
+Done
+``` 

@@ -111,6 +111,27 @@ class CommandTests: XCTestCase {
             .store(in: &cancellables)
 
         wait(for: [exp], timeout: 10)
+    }
 
+    func testWhichBash() throws {
+        let exp = expectation(description: "sink invoked")
+
+        let which = Command("/usr/bin/which", "bash")
+        which.run()
+            .sink{ completion in
+                defer {
+                    exp.fulfill()
+                }
+
+                guard case .finished = completion else {
+                    XCTFail("Unexpected error")
+                    return
+                }
+            } receiveValue: {
+                print("Received", $0)
+            }
+            .store(in: &cancellables)
+
+        wait(for: [exp], timeout: 10)
     }
 }

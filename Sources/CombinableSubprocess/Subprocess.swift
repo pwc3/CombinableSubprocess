@@ -79,7 +79,7 @@ public final class Subprocess {
     ///   - executableURL: The receiver's executable.
     ///   - arguments: The command arguments that the system uses to launch the executable.
     ///   - currentDirectoryURL: The current directory for the receiver.
-    ///   - environment: The environment for the receiver.
+    ///   - environment: The environment for the receiver. Pass `nil` (the default) to inherit the environment from the parent process.
     public init(
         executableURL: URL,
         arguments: [String],
@@ -92,8 +92,12 @@ public final class Subprocess {
 
         (termination, terminationPromise) = Future.promise()
 
-        receiver.currentDirectoryURL = currentDirectoryURL
-        receiver.environment = environment
+        currentDirectoryURL.map { receiver.currentDirectoryURL = $0 }
+
+        // NOTE: If we just assign receiver.environment = environment when environment is nil,
+        // the child process to have an empty environment. It will only inherit our environment
+        // if we don't do the assignment. (This was a fun bug to track down.)
+        environment.map { receiver.environment = $0 }
     }
 
     /// Creates a new subprocess using String paths instead of URLs.
@@ -139,13 +143,22 @@ public final class Subprocess {
         let pipe = Pipe()
         let subject = PassthroughSubject<String, Error>()
 
-        pipe.fileHandleForReading.readabilityHandler = { handle in
+        group.enter()
+
+        pipe.fileHandleForReading.readabilityHandler = { [group] handle in
             let data = handle.availableData
+
+            if data.count == 0 {
+                group.leave()
+                pipe.fileHandleForReading.readabilityHandler = nil
+                return
+            }
+
             if let string = String(data: data, encoding: .utf8) {
                 subject.send(string)
             }
             else {
-                // If this happens, we'll need to reconsider the buffering strateggy.
+                // If this happens, we'll need to reconsider the buffering strategy.
                 preconditionFailure("ERROR: Could not create string from input data. Dropping \(data.count) byte(s).")
             }
         }
@@ -159,7 +172,7 @@ public final class Subprocess {
         let publisher = subject
             .flatMap { string in
                 // Since multiple lines may be read, split by line and republish.
-                string.components(separatedBy: .newlines).publisher
+                return split(string: string).publisher
             }
             .buffer(
                 size: .max,
@@ -175,13 +188,21 @@ public final class Subprocess {
 
     /// Runs the subprocess.
     public func run() {
-        receiver.terminationHandler = { [terminationPromise] proc in
-            let error = Self.error(for: proc)
-            terminationPromise(error.map { .failure($0) } ?? .success(()))
+        receiver.terminationHandler = { [group] proc in
+            group.leave()
         }
 
         do {
+            group.enter()
             try receiver.run()
+
+            // If an error is thrown, we want to notify in the catch block.
+            // Also, we don't want to call Self.error(for:) in the event of a launch error
+            // as accessing terminationReason and terminationStatus on an un-launched
+            // process will result in a runtime exception.
+            group.notify(queue: notifyQueue) { [receiver, terminationPromise] in
+                terminationPromise(Self.error(for: receiver).map { .failure($0) } ?? .success(()))
+            }
         }
         catch {
             terminationPromise(.failure(error))
@@ -273,4 +294,14 @@ extension Subprocess: CustomDebugStringConvertible {
 
         return "Subprocess(\(executable) \(arguments))"
     }
+}
+
+private func split(string: String) -> [String] {
+    // Remove trailing newline so we don't emit an empty string at the end of the sequence.
+    var string = string
+    if string.last?.isNewline == true {
+        string.removeLast()
+    }
+
+    return string.components(separatedBy: .newlines)
 }
