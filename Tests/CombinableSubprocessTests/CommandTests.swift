@@ -47,6 +47,7 @@ class CommandTests: XCTestCase {
 
         let seq = Command("/usr/bin/seq", "10")
         seq.run()
+            .filter { !$0.isEmpty }
             .count()
             .sink { completion in
                 defer {

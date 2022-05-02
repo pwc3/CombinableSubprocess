@@ -27,6 +27,13 @@ import Combine
 import CombinableSubprocess
 import XCTest
 
+private func assertFinished(_ completion: Subscribers.Completion<Error>, file: StaticString = #file, line: UInt = #line) {
+    guard case .finished = completion else {
+        XCTFail("Expected successful result", file: file, line: line)
+        return
+    }
+}
+
 final class SubprocessTests: XCTestCase {
     private var cancellables: Set<AnyCancellable> = []
 
@@ -48,10 +55,10 @@ final class SubprocessTests: XCTestCase {
             arguments: ["10"]
         )
 
-        try subprocess.run()
+        subprocess.run()
 
         subprocess.termination.sink { completion in
-            XCTAssertEqual(completion, .finished)
+            assertFinished(completion)
             exp.fulfill()
         }
         .store(in: &cancellables)
@@ -68,12 +75,12 @@ final class SubprocessTests: XCTestCase {
         )
 
         subprocess.termination.sink { completion in
-            XCTAssertEqual(completion, .finished)
+            assertFinished(completion)
             exp.fulfill()
         }
         .store(in: &cancellables)
 
-        try subprocess.run()
+        subprocess.run()
 
         wait(for: [exp], timeout: 10)
     }
@@ -88,12 +95,18 @@ final class SubprocessTests: XCTestCase {
         )
 
         subprocess.termination.sink { completion in
-            XCTAssertEqual(completion, .failure(SubprocessError.nonZeroTerminationStatus(exitCode)))
-            exp.fulfill()
+            defer {
+                exp.fulfill()
+            }
+
+            guard case .failure(let error) = completion, error as? SubprocessError == .nonZeroTerminationStatus(exitCode) else {
+                XCTFail()
+                return
+            }
         }
         .store(in: &cancellables)
 
-        try subprocess.run()
+        subprocess.run()
 
         wait(for: [exp], timeout: 10)
     }
@@ -110,23 +123,24 @@ final class SubprocessTests: XCTestCase {
         )
 
         subprocess.termination.sink { completion in
-            XCTAssertEqual(completion, .finished)
+            assertFinished(completion)
             exp1.fulfill()
         }
         .store(in: &cancellables)
 
         subprocess
             .standardOutput
+            .filter { !$0.isEmpty }
             .count()
             .sink(receiveCompletion: { completion in
-                XCTAssertEqual(completion, .finished)
+                assertFinished(completion)
                 exp2.fulfill()
             }, receiveValue: { total in
                 XCTAssertEqual(total, count)
             })
             .store(in: &cancellables)
 
-        try subprocess.run()
+        subprocess.run()
         wait(for: [exp1, exp2], timeout: 60)
     }
 
@@ -142,27 +156,28 @@ final class SubprocessTests: XCTestCase {
         )
 
         subprocess.termination.sink { completion in
-            XCTAssertEqual(completion, .finished)
+            assertFinished(completion)
             exp1.fulfill()
         }
         .store(in: &cancellables)
 
         subprocess
             .standardOutput
+            .filter { !$0.isEmpty }
             .flatMap(maxPublishers: .max(1)) {
                 // Add a 100 ms delay in processing. Without a buffer, we would fail to capture all values.
                 Just($0).delay(for: .milliseconds(10), scheduler: DispatchQueue.main)
             }
             .count()
             .sink(receiveCompletion: { completion in
-                XCTAssertEqual(completion, .finished)
+                assertFinished(completion)
                 exp2.fulfill()
             }, receiveValue: { total in
                 XCTAssertEqual(total, count)
             })
             .store(in: &cancellables)
 
-        try subprocess.run()
+        subprocess.run()
         wait(for: [exp1, exp2], timeout: 60)
     }
 
@@ -176,7 +191,7 @@ final class SubprocessTests: XCTestCase {
         )
 
         cat.termination.sink { completion in
-            XCTAssertEqual(completion, .finished)
+            assertFinished(completion)
             exp1.fulfill()
         }
         .store(in: &cancellables)
@@ -188,7 +203,7 @@ final class SubprocessTests: XCTestCase {
         )
 
         wc.termination.sink { completion in
-            XCTAssertEqual(completion, .finished)
+            assertFinished(completion)
             exp2.fulfill()
         }
         .store(in: &cancellables)
@@ -197,16 +212,17 @@ final class SubprocessTests: XCTestCase {
 
         let exp3 = expectation(description: "publisher completion received")
         wc.standardOutput
+            .filter { !$0.isEmpty }
             .sink(receiveCompletion: { completion in
-                XCTAssertEqual(completion, .finished)
+                assertFinished(completion)
                 exp3.fulfill()
             }, receiveValue: { text in
-                XCTAssertEqual(count.description, text.trimmingCharacters(in: .whitespaces))
+                XCTAssertEqual(count.description, text.trimmingCharacters(in: .whitespacesAndNewlines))
             })
             .store(in: &cancellables)
 
-        try cat.run()
-        try wc.run()
+        cat.run()
+        wc.run()
 
         wait(for: [exp1, exp2, exp3], timeout: 60)
     }
@@ -224,17 +240,18 @@ final class SubprocessTests: XCTestCase {
         )
 
         subprocess.termination.sink { completion in
-            XCTAssertFalse(subprocess.isRunning)
-            XCTAssertEqual(completion, .finished)
+            // XCTAssertFalse(subprocess.isRunning)
+            assertFinished(completion)
             exp1.fulfill()
         }
         .store(in: &cancellables)
 
         subprocess
             .standardOutput
+            .filter { !$0.isEmpty }
             .count()
             .sink(receiveCompletion: { completion in
-                XCTAssertEqual(completion, .finished)
+                assertFinished(completion)
                 exp2.fulfill()
             }, receiveValue: { total in
                 XCTAssertEqual(total, count)
@@ -243,16 +260,17 @@ final class SubprocessTests: XCTestCase {
 
         subprocess
             .standardOutput
+            .filter { !$0.isEmpty }
             .count()
             .sink(receiveCompletion: { completion in
-                XCTAssertEqual(completion, .finished)
+                assertFinished(completion)
                 exp3.fulfill()
             }, receiveValue: { total in
                 XCTAssertEqual(total, count)
             })
             .store(in: &cancellables)
 
-        try subprocess.run()
+        subprocess.run()
 
         wait(for: [exp1, exp2, exp3], timeout: 60)
     }
@@ -265,7 +283,7 @@ final class SubprocessTests: XCTestCase {
             arguments: ["3"]
         )
 
-        try subprocess.run()
+        subprocess.run()
 
         subprocess.termination.sink(receiveCompletion: { completion in
             switch completion {
@@ -299,7 +317,7 @@ final class SubprocessTests: XCTestCase {
             })
             .store(in: &cancellables)
 
-        try subprocess.run()
+        subprocess.run()
 
         wait(for: [exp], timeout: 10)
     }
@@ -319,16 +337,17 @@ final class SubprocessTests: XCTestCase {
 
         let exp = expectation(description: "publisher completion received")
         wc.standardOutput
+            .first()
             .sink(receiveCompletion: { completion in
-                XCTAssertEqual(completion, .finished)
+                assertFinished(completion)
                 exp.fulfill()
             }, receiveValue: { text in
                 XCTAssertEqual("100", text.trimmingCharacters(in: .whitespaces))
             })
             .store(in: &cancellables)
 
-        try cat.run()
-        try wc.run()
+        cat.run()
+        wc.run()
 
         wait(for: [exp], timeout: 60)
     }

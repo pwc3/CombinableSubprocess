@@ -110,6 +110,7 @@ let wc = Subprocess(
 cat.pipeStandardOutput(toStandardInput: wc)
 
 wc.standardOutput
+    .first() // take only the first line of output
     .sink(receiveCompletion: { completion in
         // ...
     }, receiveValue: { text in

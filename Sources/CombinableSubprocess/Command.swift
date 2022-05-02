@@ -46,15 +46,7 @@ public struct Command {
     /// Runs the subprocess and returns its standard output publisher.
     public func run() -> AnyPublisher<String, Error> {
         let publisher = subprocess.standardOutput
-
-        do {
-            try subprocess.run()
-            return publisher
-                .mapError { $0 as Error }
-                .eraseToAnyPublisher()
-        }
-        catch {
-            return Fail(error: error).eraseToAnyPublisher()
-        }
+        subprocess.run()
+        return publisher
     }
 }

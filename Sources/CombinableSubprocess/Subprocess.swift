@@ -37,8 +37,6 @@ public enum SubprocessError: Error, Equatable {
 
     /// The output publisher failed due to a buffer overrun.
     case bufferOverrun
-
-    case unableToLaunchProcess
 }
 
 /**
@@ -46,33 +44,34 @@ public enum SubprocessError: Error, Equatable {
 
  At minimum, you need to call `run()` on a subprocess object in order to begin execution.
 
- To wait for the subprocess to terminate, use the `termination` property which is a `Future`. If the subprocess completed successfully, the `Future` will complete without an error. If the subprocess fails, the `Future` will fail with a corresponding `SubprocessError` value.
+ To wait for the subprocess to terminate, use the `termination` property which is a `Future`. If the subprocess completed successfully, the `Future` will complete without an error. If the subprocess fails, the `Future` will fail.
 
- To observe the subprocess output, use the `stdout` and `stderr` publishers. The first time an output publisher is referenced, the corresponding output stream is redirected to the resulting publisher. This must be done before the subprocess is launched (i.e., before `run()` is called). If you do not reference an output publisher, that output stream will be inherited from the creating process.
+ To observe the subprocess output, use the `standardOutput` and `standardError` publishers. The first time an output publisher is referenced, the corresponding output stream is redirected to the resulting publisher. This must be done before the subprocess is launched (i.e., before `run()` is called). If you do not reference an output publisher, that output stream will be inherited from the creating process.
 
  It is possible to pipe standard output from one subprocess into the standard input of another process using the `pipeStandardOutput(toStandardInput:)` function.
  */
 public final class Subprocess {
-
     private let receiver: Process
 
-    // Used to track when the process has terminated and stdout/stderr have been fully
-    // read (only if a publisher has been attached).
     private let group = DispatchGroup()
 
-    // The queue used in calls to group.notify(queue:work:).
-    private let notifyQueue: DispatchQueue
-
-    // The promise used to resolve the termination future.
-    private let terminationPromise: Future<Void, SubprocessError>.Promise
+    private let notifyQueue = DispatchQueue(
+        label: "Subprocess2Queue",
+        qos: .default,
+        attributes: [],
+        autoreleaseFrequency: .workItem,
+        target: nil
+    )
 
     /// Signals when the process has terminated.
-    public let termination: Future<Void, SubprocessError>
+    public let termination: Future<Void, Error>
 
-    /// Maximum size of an output publisher's line buffer.
-    public let lineBufferMaxSize: Int
+    // The promise used to resolve the termination future.
+    private let terminationPromise: Future<Void, Error>.Promise
 
-    // MARK: - Initializer
+    private var cancellables: Set<AnyCancellable> = []
+
+    // MARK: - Initializers
 
     /// Creates a new subprocess.
     ///
@@ -81,54 +80,20 @@ public final class Subprocess {
     ///   - arguments: The command arguments that the system uses to launch the executable.
     ///   - currentDirectoryURL: The current directory for the receiver.
     ///   - environment: The environment for the receiver.
-    ///   - qualityOfService: The default quality of service level the system applies to operations the subprocess executes.
-    ///   - lineBufferMaxSize: The maximum size of an output publisher's line buffer.
     public init(
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL? = nil,
-        environment: [String : String]? = nil,
-        qualityOfService: DispatchQoS = .default,
-        lineBufferMaxSize: Int = .max
+        environment: [String : String]? = nil
     ) {
         receiver = Process()
         receiver.executableURL = executableURL
         receiver.arguments = arguments
 
-        // Apply the qualityOfService provided for the DispatchQueue to the process.
-        switch qualityOfService.qosClass {
-        case .userInitiated:
-            receiver.qualityOfService = .userInitiated
-
-        case .userInteractive:
-            receiver.qualityOfService = .userInteractive
-
-        case .utility:
-            receiver.qualityOfService = .utility
-
-        case .background:
-            receiver.qualityOfService = .background
-
-        case .unspecified, .default:
-            receiver.qualityOfService = .default
-
-        @unknown default:
-            receiver.qualityOfService = .default
-        }
-
-        notifyQueue = DispatchQueue(
-            label: "SubprocessQueue",
-            qos: qualityOfService,
-            attributes: [],
-            autoreleaseFrequency: .workItem,
-            target: nil
-        )
-        self.lineBufferMaxSize = lineBufferMaxSize
-
         (termination, terminationPromise) = Future.promise()
 
-        currentDirectoryURL.map { receiver.currentDirectoryURL = $0 }
-        environment.map { receiver.environment = $0 }
+        receiver.currentDirectoryURL = currentDirectoryURL
+        receiver.environment = environment
     }
 
     /// Creates a new subprocess using String paths instead of URLs.
@@ -136,135 +101,31 @@ public final class Subprocess {
         executablePath: String,
         arguments: [String],
         currentDirectoryPath: String? = nil,
-        environment: [String : String]? = nil,
-        qualityOfService: DispatchQoS = .default,
-        lineBufferMaxSize: Int = .max
+        environment: [String : String]? = nil
     ) {
         self.init(
             executableURL: URL(fileURLWithPath: executablePath),
             arguments: arguments,
             currentDirectoryURL: currentDirectoryPath.map { URL(fileURLWithPath: $0) },
-            environment: environment,
-            qualityOfService: qualityOfService,
-            lineBufferMaxSize: lineBufferMaxSize
+            environment: environment
         )
-    }
-
-    deinit {
-        print("*** deinit subprocess", debugDescription)
-    }
-
-    /// Runs the subprocess.
-    public func run() throws {
-        // Enter the dispatch group.
-        group.enter()
-
-        let debugDescription = self.debugDescription
-
-        // When the process terminates, leave the dispatch group.
-        receiver.terminationHandler = { [group] proc in
-            print("*** termination handler", debugDescription)
-            group.leave()
-            proc.terminationHandler = nil
-        }
-
-        // When all of the work items in the dispatch group finish, the notify function is called.
-        // Here, we fulfill the termination promise with a value encapsulating the termination
-        // status and reason.
-        group.notify(queue: notifyQueue) { [receiver, terminationPromise] in
-            print("*** invoking termination promise", debugDescription)
-            terminationPromise(Self.resultForCompletedProcess(receiver))
-            print("*** finished subprocess", debugDescription)
-        }
-
-        // Actually start the process.
-        do {
-            print("*** starting", debugDescription)
-            try receiver.run()
-            print("*** started", debugDescription)
-        }
-        catch {
-            print("*** error starting", debugDescription, error)
-            group.leave()
-        }
     }
 
     // MARK: - Output Streams
 
     /// Routes the process's standard output to a publisher.
-    public lazy var standardOutput: AnyPublisher<String, SubprocessError> = {
-        let stdout = Pipe()
-        let publisher = outputPublisher(for: stdout)
-        receiver.standardOutput = stdout
-        return publisher.eraseToAnyPublisher()
+    public lazy var standardOutput: AnyPublisher<String, Error> = {
+        let (pipe, publisher) = createOutputPipe()
+        receiver.standardOutput = pipe
+        return publisher
     }()
 
     /// Routes the process's standard error to a publisher.
-    public lazy var standardError: AnyPublisher<String, SubprocessError> = {
-        let stderr = Pipe()
-        let publisher = outputPublisher(for: stderr)
-        receiver.standardError = stderr
-        return publisher.eraseToAnyPublisher()
+    public lazy var standardError: AnyPublisher<String, Error> = {
+        let (pipe, publisher) = createOutputPipe()
+        receiver.standardError = pipe
+        return publisher
     }()
-
-    private func outputPublisher(for pipe: Pipe) -> AnyPublisher<String, SubprocessError> {
-        // We'll start with a pass through subject that will publish each of the lines read
-        // from the pipe.
-        let subject = PassthroughSubject<String, SubprocessError>()
-
-        // Enter the dispatch group. This allows to continue processing buffered output
-        // after the process has finished.
-        group.enter()
-        print("*** entered DispatchGroup in outputPublisher(for:)", debugDescription)
-
-        Task {
-            do {
-                // Loop over the lines emitted by the pipe's read handle's async sequence.
-                // This will terminate when all of the pipe's data has been read and the
-                // pipe is closed.
-                for try await line in pipe.fileHandleForReading.bytes.lines {
-                    subject.send(line)
-                }
-
-                // NOTE: If receiver.run() threw an error, this loop won't exit.
-                // Consequently, group.leave() won't get called and the publisher hangs.
-            }
-            catch {
-                print("*** caught error reading from pipe", error, debugDescription)
-            }
-
-            // When we reach this point, the process is complete and we can leave the
-            // dispatch group.
-            group.leave()
-            print("*** left DispatchGroup in outputPublisher(for:)", debugDescription)
-        }
-
-        // When all of the work items in the dispatch group finish, the notify function is called.
-        // Here, we send the completion out on the publisher.
-        group.notify(queue: notifyQueue) { [receiver] in
-            switch Self.resultForCompletedProcess(receiver) {
-            case .success:
-                subject.send(completion: .finished)
-
-            case .failure(let error):
-                subject.send(completion: .failure(error))
-            }
-        }
-
-        // Buffer the subject so downstream subscribers can apply back pressure. If we don't
-        // buffer the subject, lines could potentially be lost.
-        //
-        // If the buffer becomes full, the publisher fails with a .bufferOverrun error.
-        return subject
-            .buffer(
-                size: lineBufferMaxSize,
-                prefetch: .byRequest,
-                whenFull: .customError {
-                    SubprocessError.bufferOverrun
-                }
-            )
-            .eraseToAnyPublisher()
-    }
 
     /// Connects standard output of this process to standard input of the specified process.
     /// Allows for the construction of process pipelines.
@@ -274,25 +135,70 @@ public final class Subprocess {
         other.receiver.standardInput = pipe
     }
 
-    /// Build a Result value for the specified completed process. It is a precondition that the
-    /// process has finished running.
-    private static func resultForCompletedProcess(_ process: Process) -> Result<Void, SubprocessError> {
+    private func createOutputPipe() -> (Pipe, AnyPublisher<String, Error>) {
+        let pipe = Pipe()
+        let subject = PassthroughSubject<String, Error>()
+
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if let string = String(data: data, encoding: .utf8) {
+                subject.send(string)
+            }
+            else {
+                // If this happens, we'll need to reconsider the buffering strateggy.
+                preconditionFailure("ERROR: Could not create string from input data. Dropping \(data.count) byte(s).")
+            }
+        }
+
+        termination
+            .sink(receiveCompletion: {
+                subject.send(completion: $0)
+            }, receiveValue: { _ in })
+            .store(in: &cancellables)
+
+        let publisher = subject
+            .flatMap { string in
+                // Since multiple lines may be read, split by line and republish.
+                string.components(separatedBy: .newlines).publisher
+            }
+            .buffer(
+                size: .max,
+                prefetch: .byRequest,
+                whenFull: .customError {
+                    SubprocessError.bufferOverrun
+                }
+            )
+            .eraseToAnyPublisher()
+
+        return (pipe, publisher)
+    }
+
+    /// Runs the subprocess.
+    public func run() {
+        receiver.terminationHandler = { [terminationPromise] proc in
+            let error = Self.error(for: proc)
+            terminationPromise(error.map { .failure($0) } ?? .success(()))
+        }
+
+        do {
+            try receiver.run()
+        }
+        catch {
+            terminationPromise(.failure(error))
+        }
+    }
+
+    private static func error(for process: Process) -> Error? {
         precondition(!process.isRunning)
 
-        // How to detect if the process hasn't been launched yet?
-        // Specifically if receiver.run() threw an error?
-        guard process.processIdentifier != 0 else {
-            return .failure(.unableToLaunchProcess)
-        }
-
         if process.terminationReason == .uncaughtSignal {
-            return .failure(.uncaughtSignal)
+            return SubprocessError.uncaughtSignal
         }
         else if process.terminationStatus != 0 {
-            return .failure(.nonZeroTerminationStatus(process.terminationStatus))
+            return SubprocessError.nonZeroTerminationStatus(process.terminationStatus)
         }
         else {
-            return .success(())
+            return nil
         }
     }
 }
